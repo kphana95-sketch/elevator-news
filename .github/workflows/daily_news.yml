@@ -1,0 +1,31 @@
+name: Daily Elevator News
+
+on:
+  schedule:
+    # UTC 기준 20:50 = 한국 시간(KST) 오전 5시 50분 (매일 아침 자동 실행)
+    - cron: '50 20 * * *'
+  workflow_dispatch: # 관리자가 원할 때 수동으로 즉시 실행 버튼도 활성화
+
+jobs:
+  run-news-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install google-generativeai requests beautifulsoup4
+
+      - name: Run script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: python main.py
