@@ -15,6 +15,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = 'gemini-3.8-flash'
 
 # 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사 추적)
 def fetch_yonhap_news():
@@ -104,31 +105,29 @@ prompt = f"""
 15. ...
 """
 
-# 3. 제미나이 호출 (다중 모델 폴백)
+# 3. 제미나이 호출 (단일 정식 모델 gemini-3.8-flash 대상 5단계 재시도 백오프)
 print("2. 제미나이 데스킹 진행 중...")
-candidate_models = ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-2.0-flash']
 result_text = None
+max_retries = 5
 
-for model_name in candidate_models:
-    print(f"-> 모델 시도: {model_name}...")
-    for attempt in range(1, 3):
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            if response and response.text:
-                result_text = response.text
-                print(f"-> [{model_name}] 호출 성공!")
-                break
-        except Exception as e:
-            print(f"경고: {model_name} ({attempt}/2차 시도) 오류 ({e})")
-            time.sleep(3 * attempt)
-    if result_text:
-        break
+for attempt in range(1, max_retries + 1):
+    try:
+        print(f"-> {MODEL_NAME} 호출 시도 ({attempt}/{max_retries})...")
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        if response and response.text:
+            result_text = response.text
+            print("-> 제미나이 데스킹 완료!")
+            break
+    except Exception as e:
+        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초 순차 대기
+        print(f"경고: {attempt}차 시도 오류 발생 ({e}). {wait_seconds}초 후 재시도합니다.")
+        time.sleep(wait_seconds)
 
 if not result_text:
-    raise RuntimeError("모든 백업 모델 호출에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+    raise RuntimeError("구글 서버 과부하가 지속되어 요청을 완료하지 못했습니다. 잠시 후 다시 실행해 주세요.")
 
 print("\n--- [데스킹 결과] ---")
 print(result_text)
