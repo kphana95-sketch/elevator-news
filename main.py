@@ -1,4 +1,5 @@
 import os
+import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -14,7 +15,6 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.8-flash'
 
 # 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사는 [어젯밤] 자동 태깅)
 def fetch_yonhap_news():
@@ -24,9 +24,7 @@ def fetch_yonhap_news():
     soup = BeautifulSoup(res.text, 'html.parser')
     
     now_kst = datetime.utcnow() + timedelta(hours=9)
-    # 어제 밤 21:00 기준
     cutoff_time = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    # 오늘 00:00 기준
     today_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     
     collected_articles = []
@@ -48,7 +46,6 @@ def fetch_yonhap_news():
             if time_tag and time_tag.has_attr('data-date-time'):
                 article_time = datetime.strptime(time_tag['data-date-time'], '%Y-%m-%d %H:%M:%S')
                 if article_time >= cutoff_time:
-                    # 어젯밤(21시~자정) 기사면 태그 부착
                     if article_time < today_start:
                         title = f"[어젯밤] {title}"
                     collected_articles.append(title)
@@ -57,7 +54,6 @@ def fetch_yonhap_news():
         except Exception:
             collected_articles.append(title)
             
-        # 15개의 양질의 후보를 위해 35개까지 넉넉히 수집
         if len(collected_articles) >= 35:
             break
             
@@ -68,7 +64,7 @@ raw_news_list = fetch_yonhap_news()
 print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
 news_context = "\n".join([f"- {t}" for t in raw_news_list])
 
-# 2. 고도화된 엘리베이터 뉴스 데스킹 프롬프트
+# 2. 제미나이 데스킹 프롬프트
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
 수집된 기사 중에서 엘리베이터 탑승객(직장인, 입주사 임직원)에게 전달할 가장 중요한 기사 15개를 엄선해 16자 2줄 헤드라인으로 다듬으세요. (1~10번: 정규 송출용, 11~15번: 백업 후보군)
@@ -77,7 +73,7 @@ prompt = f"""
 1. 적극 선정: 국내 경제, 주요 대기업/산업, IT/테크 트렌드, 부동산, 정책, 일자리, 국민적 보건·복지 이슈 등 하루 종일 유효한 굵직한 스트레이트 기사.
 2. 엄격 배제:
    - 장중 증시 시황(코스피/코스닥 등락), 가상화폐 단순 시세, 연예, 가십, 문화, 비인기 스포츠.
-   - 독자 입장에서 '어쩌라고?' 반응이 나오는 타국 내각 정치 싸움, 자극적 단발성 해외 사건·사고·르포(예: 외신 정치인 비리 폭로, 비밀감옥, 국경 분쟁 단신 등 체감도 없는 기사).
+   - 타국 내각 정치 싸움, 자극적 단발성 해외 사건·사고·르포(예: 외신 정치인 비리 폭로, 비밀감옥, 국경 분쟁 단신 등 체감도 없는 기사).
    - 국제 뉴스는 관세, 환율, 반도체 공급망, 미 대선 정책 등 '국내 경제/독자에게 직접 영향을 미치는 사안'만 채택.
 
 [헤드라인 편집 및 문장 다듬기 원칙]
@@ -106,16 +102,32 @@ prompt = f"""
 15. [백업] ...
 """
 
-print(f"2. 제미나이 데스킹 진행 중 (모델: {MODEL_NAME})...")
-response = client.models.generate_content(
-    model=MODEL_NAME,
-    contents=prompt,
-)
-result_text = response.text
+# 3. 제미나이 호출 (503 과부하 대비 재시도 로직)
+print("2. 제미나이 데스킹 진행 중...")
+models_to_try = ['gemini-3.8-flash', 'gemini-3.8-flash']
+result_text = None
+
+for attempt, model_name in enumerate(models_to_try, 1):
+    try:
+        print(f"-> 호출 시도 {attempt}/2 (모델: {model_name})...")
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+        result_text = response.text
+        if result_text:
+            break
+    except Exception as e:
+        print(f"경고: {attempt}차 시도 실패 ({e}). 5초 대기 후 재시도합니다.")
+        time.sleep(5)
+
+if not result_text:
+    raise RuntimeError("구글 서버 과부하로 응답을 가져오지 못했습니다. 잠시 후 다시 실행해 주세요.")
+
 print("\n--- [데스킹 결과] ---")
 print(result_text)
 
-# 3. 이메일 자동 발송
+# 4. 이메일 자동 발송
 def send_email(subject, body_text):
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
