@@ -16,7 +16,7 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 # 1. 제미나이 설정
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 새벽 기사 필터링)
 def fetch_yonhap_news():
