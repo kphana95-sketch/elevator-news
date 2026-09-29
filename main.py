@@ -15,7 +15,6 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.8-flash'
 
 # 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사 추적)
 def fetch_yonhap_news():
@@ -65,7 +64,7 @@ raw_news_list = fetch_yonhap_news()
 print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
 news_context = "\n".join([f"- {t}" for t in raw_news_list])
 
-# 2. 제미나이 데스킹 프롬프트 (순수 16자 2줄 헤드라인 집중)
+# 2. 제미나이 데스킹 프롬프트
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
 수집된 기사 중에서 빌딩 입주사 임직원 및 직장인들이 출근길에 주목할 만한 가장 가치 있는 기사 15개를 엄선해 16자 2줄 헤드라인으로 다듬으세요.
@@ -76,8 +75,8 @@ prompt = f"""
    - 직장인과 기업인들의 이목을 집중시키는 인사/이직(예: 퇴직공직자 대기업행 등), 채용, 연봉, 근무환경 등 체감도 높은 경제·사회 통계 이슈도 적극 포함.
 2. 엄격 배제:
    - 장중 증시 시황(코스피/코스닥 등락), 가상화폐 단순 시세, 연예, 가십, 문화, 비인기 스포츠.
-   - 체감도 없는 타국 내각 정치 싸움, 자극적 단발성 해외 사건·사고·르포(예: 외신 정치인 비리 폭로, 비밀감옥 등).
-   - 국제 뉴스는 관세, 환율, 반도체 공급망 등 '국내 경제/독자에게 직접 영향을 미치는 사안'만 채택.
+   - 체감도 없는 타국 내각 정치 싸움, 자극적 단발성 해외 사건·사고·르포.
+   - 국제 뉴스는 관세, 환율, 반도체 공급망 등 국내 경제/독자에게 직접 영향을 미치는 사안만 채택.
 
 [헤드라인 편집 및 문장 다듬기 원칙]
 1. 원문 인용부호 유지: 원문 제목에 큰따옴표(" ")로 묶인 주요 발언이나 핵심 멘트(예: "대졸 뽑는다", "상응조치 단행")는 임의로 없애지 말고 생동감을 살리기 위해 그대로 유지하세요.
@@ -91,7 +90,7 @@ prompt = f"""
    - 2행(슬래시 뒤): 공백 및 문장부호 포함 '최소 10자 ~ 최대 16자' (절대 16자 초과 금지!)
 3. [어젯밤] 표기 안내:
    - 수집 목록에 '[기사시간:어젯밤]' 표시가 있는 기사라면, 2행 헤드라인(16자 이내)을 온전히 다 작성한 후, 문장 맨 뒤에 한 칸 띄우고 `[어젯밤]`을 덧붙이세요.
-   - 중요한 점: `[어젯밤]`은 관리자 식별용 태그이므로, 2행 자체의 16자 글자 수 카운팅에서 완전히 제외됩니다. 2행 헤드라인 문구만 온전히 10자~16자 규격을 맞추면 됩니다.
+   - [어젯밤]은 식별용 표식이므로 2행 자체의 16자 글자 수 카운팅에서 제외됩니다.
 4. [분야] 태그나 (14자) 같은 글자 수 표기 등 불필요한 부가 정보는 일절 적지 마세요.
 5. 한자 약칭(美, 中, 日, 韓, 北, 尹, 車, 産 등)을 적극 활용해 글자 수를 절약하세요.
 
@@ -105,29 +104,60 @@ prompt = f"""
 15. ...
 """
 
-# 3. 제미나이 호출 (단일 정식 모델 gemini-3.8-flash 대상 5단계 재시도 백오프)
+# 3. 제미나이 호출 (가용 모델 자동 식별 및 다중 후보 시도)
 print("2. 제미나이 데스킹 진행 중...")
-result_text = None
-max_retries = 5
 
-for attempt in range(1, max_retries + 1):
-    try:
-        print(f"-> {MODEL_NAME} 호출 시도 ({attempt}/{max_retries})...")
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-        )
-        if response and response.text:
-            result_text = response.text
-            print("-> 제미나이 데스킹 완료!")
-            break
-    except Exception as e:
-        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초 순차 대기
-        print(f"경고: {attempt}차 시도 오류 발생 ({e}). {wait_seconds}초 후 재시도합니다.")
-        time.sleep(wait_seconds)
+# 현재 API 키로 접근 가능한 텍스트 생성 모델 목록 탐색
+available_models = []
+try:
+    for m in client.models.list():
+        # generateContent를 지원하는 모델명만 추출
+        name = m.name.replace("models/", "") if hasattr(m, 'name') else ""
+        methods = getattr(m, 'supported_generation_methods', []) or getattr(m, 'supported_actions', [])
+        if "generateContent" in methods or not methods:
+            if "flash" in name.lower() or "gemini" in name.lower():
+                available_models.append(name)
+except Exception as e:
+    print(f"모델 목록 조회 생략: {e}")
+
+# 기본 우선순위 모델군 설정
+priority_models = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro']
+# 조회된 모델 중 우선순위 모델과 매칭 및 병합
+test_queue = [m for m in priority_models if m in available_models]
+if not test_queue:
+    test_queue = priority_models + [m for m in available_models if m not in priority_models]
+
+# 중복 제거
+seen = set()
+models_to_try = [x for x in test_queue if not (x in seen or seen.add(x))]
+
+print(f"-> 시도 후보 모델 리스트: {models_to_try[:4]}")
+
+result_text = None
+for model_candidate in models_to_try:
+    print(f"-> 모델 [{model_candidate}] 호출 시도 중...")
+    for retry in range(1, 3):
+        try:
+            response = client.models.generate_content(
+                model=model_candidate,
+                contents=prompt,
+            )
+            if response and response.text:
+                result_text = response.text
+                print(f"-> [{model_candidate}] 데스킹 성공!")
+                break
+        except Exception as err:
+            err_msg = str(err)
+            if "404" in err_msg:
+                print(f"-> [{model_candidate}] 미지원 모델 (404), 다음 모델로 이동.")
+                break
+            print(f"-> [{model_candidate}] ({retry}/2차) 과부하/오류 ({err_msg[:60]}...). 5초 대기.")
+            time.sleep(5)
+    if result_text:
+        break
 
 if not result_text:
-    raise RuntimeError("구글 서버 과부하가 지속되어 요청을 완료하지 못했습니다. 잠시 후 다시 실행해 주세요.")
+    raise RuntimeError("모든 가용 제미나이 모델이 일시 과부하 상태입니다. 잠시 후 워크플로우를 다시 실행해 주세요.")
 
 print("\n--- [데스킹 결과] ---")
 print(result_text)
