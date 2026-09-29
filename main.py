@@ -13,11 +13,10 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# 1. 공식 최신 구글 GenAI 클라이언트 설정 (gemini-3.8-flash)
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = 'gemini-3.8-flash'
 
-# 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사)
+# 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사는 [어젯밤] 자동 태깅)
 def fetch_yonhap_news():
     url = "https://media.naver.com/press/001"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -25,7 +24,10 @@ def fetch_yonhap_news():
     soup = BeautifulSoup(res.text, 'html.parser')
     
     now_kst = datetime.utcnow() + timedelta(hours=9)
+    # 어제 밤 21:00 기준
     cutoff_time = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+    # 오늘 00:00 기준
+    today_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     
     collected_articles = []
     items = soup.select('.press_edit_news .press_edit_news_link') + soup.select('.press_news_title')
@@ -46,13 +48,17 @@ def fetch_yonhap_news():
             if time_tag and time_tag.has_attr('data-date-time'):
                 article_time = datetime.strptime(time_tag['data-date-time'], '%Y-%m-%d %H:%M:%S')
                 if article_time >= cutoff_time:
+                    # 어젯밤(21시~자정) 기사면 태그 부착
+                    if article_time < today_start:
+                        title = f"[어젯밤] {title}"
                     collected_articles.append(title)
             else:
                 collected_articles.append(title)
         except Exception:
             collected_articles.append(title)
             
-        if len(collected_articles) >= 25:
+        # 15개의 양질의 후보를 위해 35개까지 넉넉히 수집
+        if len(collected_articles) >= 35:
             break
             
     return collected_articles
@@ -62,32 +68,42 @@ raw_news_list = fetch_yonhap_news()
 print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
 news_context = "\n".join([f"- {t}" for t in raw_news_list])
 
-# 3. 제미나이 데스킹 프롬프트 (분야/글자수 표기 제거, 16자 2줄)
+# 2. 고도화된 엘리베이터 뉴스 데스킹 프롬프트
 prompt = f"""
-당신은 경제일간지 뉴스국 엘리베이터 전용 미디어 편집 데스크입니다.
-아래 제공된 [수집된 연합뉴스 목록]에서 원칙에 맞게 기사 10개를 선별하고 지정된 슬래시(/) 줄바꿈 포맷으로 헤드라인을 작성하세요.
+당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
+수집된 기사 중에서 엘리베이터 탑승객(직장인, 입주사 임직원)에게 전달할 가장 중요한 기사 15개를 엄선해 16자 2줄 헤드라인으로 다듬으세요. (1~10번: 정규 송출용, 11~15번: 백업 후보군)
 
-[선별 및 배제 기준]
-1. 선정: 경제, 산업, 국제, 테크, 부동산 등 굵직한 스트레이트 기사. 하루 2번 교체하므로 오후까지 유효한 기사.
-2. 엄격 배제: 장중 증시 시황(코스피/코스닥 등락), 가상화폐(코인) 시세, 단순 연예, 가십, 문화, 비인기 스포츠.
-3. 예외: 노벨문학상 수상, 올림픽/아시안게임 축구 결승 등 초대형 국가적 관심사만 허용.
+[선별 및 배제 기준 (엄격 준수)]
+1. 적극 선정: 국내 경제, 주요 대기업/산업, IT/테크 트렌드, 부동산, 정책, 일자리, 국민적 보건·복지 이슈 등 하루 종일 유효한 굵직한 스트레이트 기사.
+2. 엄격 배제:
+   - 장중 증시 시황(코스피/코스닥 등락), 가상화폐 단순 시세, 연예, 가십, 문화, 비인기 스포츠.
+   - 독자 입장에서 '어쩌라고?' 반응이 나오는 타국 내각 정치 싸움, 자극적 단발성 해외 사건·사고·르포(예: 외신 정치인 비리 폭로, 비밀감옥, 국경 분쟁 단신 등 체감도 없는 기사).
+   - 국제 뉴스는 관세, 환율, 반도체 공급망, 미 대선 정책 등 '국내 경제/독자에게 직접 영향을 미치는 사안'만 채택.
 
-[글자 수 및 표기 절대 규칙]
-1. 반드시 '번호. 1행 헤드라인 / 2행 헤드라인' 형태로 슬래시(/) 앞뒤 띄어쓰기를 포함해 한 줄로 출력합니다.
-2. 1행(슬래시 앞): 공백 및 문장부호 포함 '최소 10자 ~ 최대 16자' (절대 16자 초과 금지!)
-3. 2행(슬래시 뒤): 공백 및 문장부호 포함 '최소 10자 ~ 최대 16자' (절대 16자 초과 금지!)
-4. [분야] 태그나 글자 수 표기(예: (14자)) 등 불필요한 부가 정보는 일절 적지 마세요.
-5. 글자 수를 줄이고 시각적 리듬감을 살리기 위해 널리 쓰이는 한자(美, 中, 日, 韓, 北, 尹, 車, 産 등)를 적극 사용하세요.
+[헤드라인 편집 및 문장 다듬기 원칙]
+1. 원문 인용부호 유지: 원문 제목에 큰따옴표(" ")로 묶인 주요 발언이나 핵심 멘트(예: "대졸 뽑는다", "상응조치 단행")는 임의로 따옴표를 없애지 말고 생동감을 위해 그대로 살려두세요.
+2. 억지 축약 금지: '소아청소년과'를 억지로 '소청과'로 줄이는 식의 거친 은어식 축약을 지양하세요. 대신 '전국' 같은 뻔한 수식어를 과감히 삭제하여 공식 명칭('소아청소년과 전공의 113명')을 살리는 것이 올바른 편집입니다.
+3. 원문 호흡 존중: 원문 제목이 이미 명확하고 글자 수가 충족된다면 무리하게 문장을 뜯어고치지 말고 원문의 자연스러운 어휘를 활용하세요.
+4. [어젯밤] 표기 유지: 기사 제목 앞에 `[어젯밤]` 태그가 붙어있는 기사는 반드시 헤드라인 앞에도 `[어젯밤]`을 그대로 명시하세요. (예: 01. [어젯밤] 엔비디아 사상 최대 / 204조 자사주 매입)
+
+[규격 및 양식 규칙]
+1. 형식: 반드시 '번호. 1행 헤드라인 / 2행 헤드라인' 형태로 작성 (슬래시 앞뒤 띄어쓰기 1칸 필수).
+2. 글자 수:
+   - 1행(슬래시 앞): 공백 포함 10자 ~ 16자 (절대 16자 초과 금지!)
+   - 2행(슬래시 뒤): 공백 포함 10자 ~ 16자 (절대 16자 초과 금지!)
+3. [분야] 태그나 글자 수 표기(예: (14자)) 등 불필요한 부가 표기는 일절 적지 마세요.
+4. 한자 약칭(美, 中, 日, 韓, 北, 尹, 車, 産 등)을 적극 활용해 글자 수를 절약하세요.
 
 [수집된 연합뉴스 목록]
 {news_context}
 
-[출력 양식 예시]
-01. 北외무성 부상 "핵보유국 지위 / 무엇으로도 되돌릴 수 없어"
-02. 한은, 기준금리 0.25%p / 38개월 만에 전격 인하
-03. 삼성전자 3분기 잠정실적 / 영업익 9조원대 머물러
+[출력 양식]
+01. ...
 ...
 10. ...
+11. [백업] ...
+...
+15. [백업] ...
 """
 
 print(f"2. 제미나이 데스킹 진행 중 (모델: {MODEL_NAME})...")
@@ -99,7 +115,7 @@ result_text = response.text
 print("\n--- [데스킹 결과] ---")
 print(result_text)
 
-# 4. 이메일 자동 발송
+# 3. 이메일 자동 발송
 def send_email(subject, body_text):
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
@@ -116,5 +132,5 @@ def send_email(subject, body_text):
     print("\n🎉 성공: 메일 발송 완료!")
 
 today_str = (datetime.utcnow() + timedelta(hours=9)).strftime("%m월 %d일")
-mail_title = f"[{today_str} 오전판] 본사 엘리베이터 뉴스 송출 10선"
+mail_title = f"[{today_str} 오전판] 본사 엘리베이터 뉴스 15선 (정규 10선 + 백업 5선)"
 send_email(mail_title, result_text)
