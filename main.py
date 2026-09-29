@@ -8,63 +8,52 @@ import requests
 from bs4 import BeautifulSoup
 from google import genai
 
-# 환경변수(Secrets) 불러오기
+# 환경변수 로드
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = 'gemini-3.8-flash'
 
-# 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사 추적)
+# 1. 연합뉴스 주요 기사 수집 (충분한 모수를 위해 상위 35개 수집)
 def fetch_yonhap_news():
-    url = "https://media.naver.com/press/001"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    url = "https://www.yna.co.kr/theme/topnews"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
     res = requests.get(url, headers=headers)
     soup = BeautifulSoup(res.text, 'html.parser')
     
-    now_kst = datetime.utcnow() + timedelta(hours=9)
-    cutoff_time = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
-    today_start = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    collected_articles = []
-    items = soup.select('.press_edit_news .press_edit_news_link') + soup.select('.press_news_title')
-    seen_urls = set()
+    news_items = []
+    articles = soup.select('.list-type038 li') or soup.select('.box-type01 li')
+    for art in articles[:35]:
+        title_tag = art.select_one('.tit-news') or art.select_one('.tit')
+        time_tag = art.select_one('.txt-time')
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+            time_str = time_tag.get_text(strip=True) if time_tag else ""
+            
+            # 어젯밤 기사 식별 (18시 이후 또는 전날 기사 표기 대응)
+            tag = " [기사시간:어젯밤]" if any(k in time_str for k in ['어제', '전날', '20:', '21:', '22:', '23:']) else ""
+            if title:
+                news_items.append(f"{title}{tag}")
+                
+    if not news_items:
+        for a_tag in soup.select('strong.tit-news, a.tit-wrap')[:35]:
+            title = a_tag.get_text(strip=True)
+            if title and title not in news_items:
+                news_items.append(title)
 
-    for item in items:
-        link = item.get('href')
-        title = item.get_text(strip=True)
-        if not link or not title or link in seen_urls:
-            continue
-        seen_urls.add(link)
-        
-        try:
-            art_res = requests.get(link, headers=headers, timeout=5)
-            art_soup = BeautifulSoup(art_res.text, 'html.parser')
-            time_tag = art_soup.select_one('._ARTICLE_DATE_TIME') or art_soup.select_one('.media_end_head_info_datestamp_time')
-            
-            if time_tag and time_tag.has_attr('data-date-time'):
-                article_time = datetime.strptime(time_tag['data-date-time'], '%Y-%m-%d %H:%M:%S')
-                if article_time >= cutoff_time:
-                    if article_time < today_start:
-                        title = f"{title} [기사시간:어젯밤]"
-                    collected_articles.append(title)
-            else:
-                collected_articles.append(title)
-        except Exception:
-            collected_articles.append(title)
-            
-        if len(collected_articles) >= 40:
-            break
-            
-    return collected_articles
+    return news_items
 
 print("1. 연합뉴스 기사 수집 중...")
-raw_news_list = fetch_yonhap_news()
-print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
-news_context = "\n".join([f"- {t}" for t in raw_news_list])
+news_list = fetch_yonhap_news()
+print(f"-> {len(news_list)}개 뉴스 수집 완료!")
+news_context = "\n".join([f"- {item}" for item in news_list])
 
-# 2. 제미나이 데스킹 프롬프트
+# 2. 제미나이 데스킹 프롬프트 (원래 사내 스타일 가이드 완벽 복원)
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
 수집된 기사 중에서 빌딩 입주사 임직원 및 직장인들이 출근길에 주목할 만한 가장 가치 있는 기사를 최대 15개(최소 10개 이상) 엄선해 16자 2줄 헤드라인으로 다듬으세요.
@@ -111,52 +100,33 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (가용 모델 자동 탐색 및 시도)
+# 3. 제미나이 호출 (503 과부하 완화 5단계 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
-available_models = []
-try:
-    for m in client.models.list():
-        name = m.name.replace("models/", "") if hasattr(m, 'name') else ""
-        methods = getattr(m, 'supported_generation_methods', []) or getattr(m, 'supported_actions', [])
-        if "generateContent" in methods or not methods:
-            if "flash" in name.lower() or "gemini" in name.lower():
-                available_models.append(name)
-except Exception as e:
-    print(f"모델 목록 조회 생략: {e}")
-
-priority_models = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
-test_queue = [m for m in priority_models if m in available_models] or priority_models
-
-seen = set()
-models_to_try = [x for x in test_queue if not (x in seen or seen.add(x))]
-
 result_text = None
-for model_candidate in models_to_try:
-    print(f"-> 모델 [{model_candidate}] 호출 시도 중...")
-    for retry in range(1, 3):
-        try:
-            response = client.models.generate_content(
-                model=model_candidate,
-                contents=prompt,
-            )
-            if response and response.text:
-                result_text = response.text
-                print(f"-> [{model_candidate}] 데스킹 성공!")
-                break
-        except Exception as err:
-            err_msg = str(err)
-            if "404" in err_msg:
-                break
-            print(f"-> [{model_candidate}] ({retry}/2차) 과부하/오류. 5초 대기.")
-            time.sleep(5)
-    if result_text:
-        break
+max_retries = 5
+
+for attempt in range(1, max_retries + 1):
+    try:
+        print(f"-> [{MODEL_NAME}] 호출 시도 ({attempt}/{max_retries})...")
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        if response and response.text:
+            result_text = response.text.strip()
+            print(f"-> [{MODEL_NAME}] 데스킹 완료!")
+            break
+    except Exception as e:
+        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초, 25초 대기
+        err_msg = str(e)
+        print(f"-> [{MODEL_NAME}] ({attempt}/{max_retries}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
+        time.sleep(wait_seconds)
 
 if not result_text:
-    raise RuntimeError("모든 가용 제미나이 모델이 일시 과부하 상태입니다. 잠시 후 워크플로우를 다시 실행해 주세요.")
+    raise RuntimeError("구글 서버 과부하로 처리를 완료하지 못했습니다.")
 
-print("\n--- [데스킹 결과] ---")
-print(result_text)
+print("\n--- [데스킹 결과 미리보기] ---")
+print(result_text[:400] + "...\n")
 
 # 4. 이메일 자동 발송
 def send_email(subject, body_text):
@@ -172,8 +142,8 @@ def send_email(subject, body_text):
     server.login(SENDER_EMAIL, clean_pw)
     server.send_message(msg)
     server.quit()
-    print("\n🎉 성공: 메일 발송 완료!")
+    print("🎉 모닝 엘리베이터 뉴스 발송 완료!")
 
-today_str = (datetime.utcnow() + timedelta(hours=9)).strftime("%m월 %d일")
-mail_title = f"[{today_str} 오전판] 본사 엘리베이터 뉴스 헤드라인"
+now_str = (datetime.utcnow() + timedelta(hours=9)).strftime("%m월 %d일")
+mail_title = f"[{now_str} 엘리베이터 뉴스] 모닝 브리핑 헤드라인"
 send_email(mail_title, result_text)
