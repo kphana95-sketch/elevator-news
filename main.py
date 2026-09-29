@@ -5,7 +5,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from google import genai
 
 # 환경변수(Secrets) 불러오기
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -13,28 +13,8 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# 1. 제미나이 설정: 사용 가능한 모델 자동 동적 선택 (하드코딩 제거)
-genai.configure(api_key=GEMINI_API_KEY)
-
-target_model_name = None
-print("0. 사용 가능한 제미나이 모델 탐색 중...")
-try:
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            # flash 모델을 우선 선택하고, 없으면 생성 가능한 첫 번째 모델 채택
-            if 'flash' in m.name.lower():
-                target_model_name = m.name
-                break
-            elif not target_model_name:
-                target_model_name = m.name
-except Exception as e:
-    print(f"모델 조회 예외 발생: {e}")
-
-if not target_model_name:
-    target_model_name = 'gemini-1.5-flash-8b'
-
-print(f"-> 최종 선택된 모델: {target_model_name}")
-model = genai.GenerativeModel(target_model_name)
+# 1. 공식 최신 구글 GenAI 클라이언트 설정
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사)
 def fetch_yonhap_news():
@@ -43,7 +23,6 @@ def fetch_yonhap_news():
     res = requests.get(url, headers=headers)
     soup = BeautifulSoup(res.text, 'html.parser')
     
-    # 한국 시간(KST) 어제 밤 21시 기준
     now_kst = datetime.utcnow() + timedelta(hours=9)
     cutoff_time = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
     
@@ -111,9 +90,13 @@ prompt = f"""
 """
 
 print("2. 제미나이 데스킹 진행 중...")
-response = model.generate_content(prompt)
+# 공식 최신 SDK 모델 호출 (gemini-2.5-flash)
+response = client.models.generate_content(
+    model='gemini-2.5-flash',
+    contents=prompt,
+)
 result_text = response.text
-print("\n--- [데스킹 결과 미리보기] ---")
+print("\n--- [데스킹 결과] ---")
 print(result_text)
 
 # 4. 이메일 자동 발송
