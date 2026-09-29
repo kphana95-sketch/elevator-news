@@ -16,7 +16,7 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사는 [어젯밤] 정보 포함)
+# 1. 연합뉴스 기사 수집 (어젯밤 21시~자정 기사는 정보 부착)
 def fetch_yonhap_news():
     url = "https://media.naver.com/press/001"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -105,27 +105,31 @@ prompt = f"""
 15. ...
 """
 
-# 3. 제미나이 호출 (일시적 서버 과부하 자동 복구)
+# 3. 제미나이 호출 (503 대응: 다중 모델 폴백 및 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
-models_to_try = ['gemini-3.8-flash', 'gemini-3.8-flash']
+candidate_models = ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-2.0-flash']
 result_text = None
 
-for attempt, model_name in enumerate(models_to_try, 1):
-    try:
-        print(f"-> 호출 시도 {attempt}/2 (모델: {model_name})...")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-        )
-        result_text = response.text
-        if result_text:
-            break
-    except Exception as e:
-        print(f"경고: {attempt}차 시도 실패 ({e}). 5초 대기 후 재시도합니다.")
-        time.sleep(5)
+for model_name in candidate_models:
+    print(f"-> 모델 시도: {model_name}...")
+    for attempt in range(1, 3):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            if response and response.text:
+                result_text = response.text
+                print(f"-> [{model_name}] 호출 성공!")
+                break
+        except Exception as e:
+            print(f"경고: {model_name} ({attempt}/2차 시도) 오류 발생 ({e})")
+            time.sleep(3 * attempt)
+    if result_text:
+        break
 
 if not result_text:
-    raise RuntimeError("구글 서버 과부하로 응답을 가져오지 못했습니다. 잠시 후 다시 실행해 주세요.")
+    raise RuntimeError("모든 백업 모델 호출에 실패했습니다. 잠시 후 다시 시도해 주세요.")
 
 print("\n--- [데스킹 결과] ---")
 print(result_text)
