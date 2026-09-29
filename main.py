@@ -13,23 +13,9 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# 1. 제미나이 설정 (버전 에러 방지: 사용 가능한 최신 Flash 모델 자동 감지)
+# 1. 제미나이 설정 (최신 gemini-3.0-flash 지정)
 genai.configure(api_key=GEMINI_API_KEY)
-
-selected_model = None
-try:
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            if 'flash' in m.name.lower():
-                selected_model = m.name
-                break
-    if not selected_model:
-        selected_model = 'gemini-2.0-flash'
-except Exception:
-    selected_model = 'gemini-2.0-flash'
-
-print(f"-> 선정된 제미나이 모델: {selected_model}")
-model = genai.GenerativeModel(selected_model)
+model = genai.GenerativeModel('gemini-3.0-flash')
 
 # 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사 필터링)
 def fetch_yonhap_news():
