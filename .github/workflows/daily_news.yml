@@ -2,9 +2,9 @@ name: Daily Elevator News
 
 on:
   schedule:
-    # UTC 기준 20:50 = 한국 시간(KST) 오전 5시 50분 (매일 아침 자동 실행)
+    # UTC 20:50 = 한국 시간(KST) 오전 5시 50분
     - cron: '50 20 * * *'
-  workflow_dispatch: # 관리자가 원할 때 수동으로 즉시 실행 버튼 활성화
+  workflow_dispatch:
 
 jobs:
   run-news-bot:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install google-generativeai requests beautifulsoup4
+          pip install google-genai requests beautifulsoup4
 
       - name: Run script
         env:
