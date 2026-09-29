@@ -13,25 +13,9 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# 1. 제미나이 설정: 사용 가능한 모델 자동 감지
+# 1. 공식 최신 구글 GenAI 클라이언트 설정 (gemini-3.8-flash)
 client = genai.Client(api_key=GEMINI_API_KEY)
-
-active_model = None
-print("0. 사용 가능한 제미나이 모델 탐색 중...")
-try:
-    for m in client.models.list():
-        m_name = m.name if hasattr(m, 'name') else str(m)
-        if 'flash' in m_name.lower():
-            # 'models/' 접두사 제거
-            active_model = m_name.split('/')[-1]
-            break
-except Exception as e:
-    print(f"모델 목록 조회 예외: {e}")
-
-if not active_model:
-    active_model = 'gemini-2.0-flash'
-
-print(f"-> 최종 선택된 모델: {active_model}")
+MODEL_NAME = 'gemini-3.8-flash'
 
 # 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사)
 def fetch_yonhap_news():
@@ -78,7 +62,7 @@ raw_news_list = fetch_yonhap_news()
 print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
 news_context = "\n".join([f"- {t}" for t in raw_news_list])
 
-# 3. 제미나이 데스킹 프롬프트
+# 3. 제미나이 데스킹 프롬프트 (분야/글자수 표기 제거, 16자 2줄)
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 전용 미디어 편집 데스크입니다.
 아래 제공된 [수집된 연합뉴스 목록]에서 원칙에 맞게 기사 10개를 선별하고 지정된 슬래시(/) 줄바꿈 포맷으로 헤드라인을 작성하세요.
@@ -106,9 +90,9 @@ prompt = f"""
 10. ...
 """
 
-print("2. 제미나이 데스킹 진행 중...")
+print(f"2. 제미나이 데스킹 진행 중 (모델: {MODEL_NAME})...")
 response = client.models.generate_content(
-    model=active_model,
+    model=MODEL_NAME,
     contents=prompt,
 )
 result_text = response.text
