@@ -13,18 +13,37 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# 1. 제미나이 설정 (최신 gemini-3.0-flash 지정)
+# 1. 제미나이 설정: 사용 가능한 모델 자동 동적 선택 (하드코딩 제거)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-3.0-flash')
 
-# 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사 필터링)
+target_model_name = None
+print("0. 사용 가능한 제미나이 모델 탐색 중...")
+try:
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            # flash 모델을 우선 선택하고, 없으면 생성 가능한 첫 번째 모델 채택
+            if 'flash' in m.name.lower():
+                target_model_name = m.name
+                break
+            elif not target_model_name:
+                target_model_name = m.name
+except Exception as e:
+    print(f"모델 조회 예외 발생: {e}")
+
+if not target_model_name:
+    target_model_name = 'gemini-1.5-flash-8b'
+
+print(f"-> 최종 선택된 모델: {target_model_name}")
+model = genai.GenerativeModel(target_model_name)
+
+# 2. 연합뉴스 기사 수집 (전날 21시 이후 ~ 당일 아침 기사)
 def fetch_yonhap_news():
     url = "https://media.naver.com/press/001"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     res = requests.get(url, headers=headers)
     soup = BeautifulSoup(res.text, 'html.parser')
     
-    # 한국 시간(KST) 기준 어제 밤 21:00 이후 기사 필터링
+    # 한국 시간(KST) 어제 밤 21시 기준
     now_kst = datetime.utcnow() + timedelta(hours=9)
     cutoff_time = (now_kst - timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
     
@@ -58,12 +77,12 @@ def fetch_yonhap_news():
             
     return collected_articles
 
-print("1. 연합뉴스 기사 수집 중 (전날 21시 이후 ~ 당일 기사)...")
+print("1. 연합뉴스 기사 수집 중...")
 raw_news_list = fetch_yonhap_news()
 print(f"-> {len(raw_news_list)}개 뉴스 수집 완료!")
 news_context = "\n".join([f"- {t}" for t in raw_news_list])
 
-# 3. 제미나이 데스킹 프롬프트 (분야/글자수 표기 없는 16자 2줄 슬래시 포맷)
+# 3. 제미나이 데스킹 프롬프트
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 전용 미디어 편집 데스크입니다.
 아래 제공된 [수집된 연합뉴스 목록]에서 원칙에 맞게 기사 10개를 선별하고 지정된 슬래시(/) 줄바꿈 포맷으로 헤드라인을 작성하세요.
@@ -107,7 +126,8 @@ def send_email(subject, body_text):
     
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
-    server.login(SENDER_EMAIL, APP_PASSWORD.replace(" ", ""))
+    clean_pw = APP_PASSWORD.replace(" ", "") if APP_PASSWORD else ""
+    server.login(SENDER_EMAIL, clean_pw)
     server.send_message(msg)
     server.quit()
     print("\n🎉 성공: 메일 발송 완료!")
