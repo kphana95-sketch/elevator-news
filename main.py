@@ -114,26 +114,19 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (가용 모델 자동 식별 및 다중 백오프 우회)
+# 3. 제미나이 호출 (고정 멀티 모델 순차 폴백)
 print("2. 제미나이 데스킹 진행 중...")
-available_models = []
-try:
-    for m in client.models.list():
-        name = m.name.replace("models/", "") if hasattr(m, 'name') else ""
-        methods = getattr(m, 'supported_generation_methods', []) or getattr(m, 'supported_actions', [])
-        if "generateContent" in methods or not methods:
-            if "flash" in name.lower() or "gemini" in name.lower():
-                available_models.append(name)
-except Exception as e:
-    print(f"모델 목록 조회 생략: {e}")
-
-priority_models = ['gemini-3.8-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-1.5-pro']
-test_queue = [m for m in priority_models if m in available_models] or priority_models
-models_to_try = list(dict.fromkeys(test_queue))
+models_to_try = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-3.8-flash'
+]
 
 result_text = None
 for model_candidate in models_to_try:
     print(f"-> 모델 시도: {model_candidate}...")
+    success = False
     for retry in range(1, 3):
         try:
             response = client.models.generate_content(
@@ -143,14 +136,13 @@ for model_candidate in models_to_try:
             if response and response.text:
                 result_text = response.text.strip()
                 print(f"-> [{model_candidate}] 데스킹 완료!")
+                success = True
                 break
         except Exception as e:
             err_msg = str(e)
-            if "404" in err_msg:
-                break
             print(f"   [{model_candidate}] ({retry}/2차) 일시 지연: {err_msg[:60]}...")
-            time.sleep(5)
-    if result_text:
+            time.sleep(3)
+    if success:
         break
 
 if not result_text:
