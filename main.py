@@ -17,43 +17,58 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = 'gemini-3.8-flash'
 
-# 1. 연합뉴스 주요 기사 수집 (충분한 모수를 위해 상위 35개 수집)
+# 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용으로 빈 목록 방지)
 def fetch_yonhap_news():
     url = "https://www.yna.co.kr/theme/topnews"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    res = requests.get(url, headers=headers)
-    soup = BeautifulSoup(res.text, 'html.parser')
-    
     news_items = []
-    articles = soup.select('.list-type038 li') or soup.select('.box-type01 li')
-    for art in articles[:35]:
-        title_tag = art.select_one('.tit-news') or art.select_one('.tit')
-        time_tag = art.select_one('.txt-time')
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-            time_str = time_tag.get_text(strip=True) if time_tag else ""
-            
-            # 어젯밤 기사 식별 (18시 이후 또는 전날 기사 표기 대응)
-            tag = " [기사시간:어젯밤]" if any(k in time_str for k in ['어제', '전날', '20:', '21:', '22:', '23:']) else ""
-            if title:
-                news_items.append(f"{title}{tag}")
-                
-    if not news_items:
-        for a_tag in soup.select('strong.tit-news, a.tit-wrap')[:35]:
-            title = a_tag.get_text(strip=True)
-            if title and title not in news_items:
-                news_items.append(title)
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 1차 시도: 주요뉴스 테마 페이지 리스트
+        for li in soup.select('div.content01 li, ul.list-type038 li, ul.box-type01 li'):
+            title_elem = li.select_one('.tit-news, .tit, a strong')
+            time_elem = li.select_one('.txt-time, .lead-time, .txt-time02')
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                time_str = time_elem.get_text(strip=True) if time_elem else ""
+                tag = " [기사시간:어젯밤]" if any(k in time_str for k in ['어제', '전날', '20:', '21:', '22:', '23:']) else ""
+                if title and title not in [item.replace(" [기사시간:어젯밤]", "") for item in news_items]:
+                    news_items.append(f"{title}{tag}")
+    except Exception as e:
+        print(f"1차 수집 경고: {e}")
 
-    return news_items
+    # 2차 보조 수집: 1차 수집이 부족할 경우 연합뉴스 메인 속보에서 보충
+    if len(news_items) < 10:
+        try:
+            main_url = "https://www.yna.co.kr/"
+            res_main = requests.get(main_url, headers=headers, timeout=10)
+            soup_main = BeautifulSoup(res_main.text, 'html.parser')
+            for a in soup_main.select('.tit-news, a.tit-wrap, strong.tit'):
+                title = a.get_text(strip=True)
+                if title and len(title) > 10 and title not in [item.replace(" [기사시간:어젯밤]", "") for item in news_items]:
+                    news_items.append(title)
+                if len(news_items) >= 35:
+                    break
+        except Exception as e:
+            print(f"2차 보조 수집 경고: {e}")
+
+    return news_items[:35]
 
 print("1. 연합뉴스 기사 수집 중...")
 news_list = fetch_yonhap_news()
 print(f"-> {len(news_list)}개 뉴스 수집 완료!")
+
+if not news_list:
+    raise RuntimeError("연합뉴스 기사를 수집하지 못했습니다. 크롤러 URL 및 구조를 확인하세요.")
+
 news_context = "\n".join([f"- {item}" for item in news_list])
 
-# 2. 제미나이 데스킹 프롬프트 (원래 사내 스타일 가이드 완벽 복원)
+# 2. 제미나이 데스킹 프롬프트 (사내 스타일 가이드 엄수)
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
 수집된 기사 중에서 빌딩 입주사 임직원 및 직장인들이 출근길에 주목할 만한 가장 가치 있는 기사를 최대 15개(최소 10개 이상) 엄선해 16자 2줄 헤드라인으로 다듬으세요.
@@ -100,7 +115,7 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (503 과부하 완화 5단계 지수 백오프)
+# 3. 제미나이 호출 (5단계 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
 result_text = None
 max_retries = 5
@@ -117,7 +132,7 @@ for attempt in range(1, max_retries + 1):
             print(f"-> [{MODEL_NAME}] 데스킹 완료!")
             break
     except Exception as e:
-        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초, 25초 대기
+        wait_seconds = attempt * 5
         err_msg = str(e)
         print(f"-> [{MODEL_NAME}] ({attempt}/{max_retries}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
         time.sleep(wait_seconds)
