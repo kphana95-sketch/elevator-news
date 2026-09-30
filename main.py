@@ -15,6 +15,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = 'gemini-3.8-flash'
 
 # 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용)
 def fetch_yonhap_news():
@@ -114,39 +115,30 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (고정 멀티 모델 순차 폴백)
+# 3. 제미나이 호출 (503 트래픽 스파이크 대응 6단계 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
-models_to_try = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-    'gemini-3.8-flash'
-]
-
 result_text = None
-for model_candidate in models_to_try:
-    print(f"-> 모델 시도: {model_candidate}...")
-    success = False
-    for retry in range(1, 3):
-        try:
-            response = client.models.generate_content(
-                model=model_candidate,
-                contents=prompt,
-            )
-            if response and response.text:
-                result_text = response.text.strip()
-                print(f"-> [{model_candidate}] 데스킹 완료!")
-                success = True
-                break
-        except Exception as e:
-            err_msg = str(e)
-            print(f"   [{model_candidate}] ({retry}/2차) 일시 지연: {err_msg[:60]}...")
-            time.sleep(3)
-    if success:
-        break
+max_retries = 6
+
+for attempt in range(1, max_retries + 1):
+    try:
+        print(f"-> [{MODEL_NAME}] 호출 시도 ({attempt}/{max_retries})...")
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+        )
+        if response and response.text:
+            result_text = response.text.strip()
+            print(f"-> [{MODEL_NAME}] 데스킹 완료!")
+            break
+    except Exception as e:
+        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초, 25초, 30초 대기
+        err_msg = str(e)
+        print(f"   [{MODEL_NAME}] ({attempt}/{max_retries}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
+        time.sleep(wait_seconds)
 
 if not result_text:
-    raise RuntimeError("모든 가용 제미나이 모델이 일시 과부하 상태입니다.")
+    raise RuntimeError("구글 서버 과부하로 처리를 완료하지 못했습니다.")
 
 print("\n--- [데스킹 결과 미리보기] ---")
 print(result_text[:400] + "...\n")
