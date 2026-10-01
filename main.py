@@ -15,6 +15,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+TARGET_MODEL = 'gemini-3.8-flash'
 
 # 1. 연합뉴스 주요 기사 수집
 def fetch_yonhap_news():
@@ -112,50 +113,33 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 데스킹 (정식 표준 모델명 순차 호출 + 상세 에러 출력)
-print("2. 제미나이 데스킹 진행 중...\n")
-
-# 공식 지원되는 표준 모델 엔드포인트 목록
-candidate_models = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-1.5-flash',
-    'gemini-3.8-flash'
-]
-
+# 3. 제미나이 데스킹 (503 트래픽 관통을 위한 5단계 롱-백오프)
+print("2. 제미나이 데스킹 진행 중...")
 result_text = None
 
-for model_name in candidate_models:
-    print(f"▶ [{model_name}] 모델 시도 시작")
-    for attempt in range(1, 4):
-        try:
-            print(f"   ({attempt}/3차) 호출 중...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            if response and response.text:
-                result_text = response.text.strip()
-                print(f"   🎉 [{model_name}] 데스킹 성공!\n")
-                break
-        except Exception as e:
-            err_str = str(e)
-            print(f"   ❌ ({attempt}/3차) 에러 발생: {err_str[:90]}")
-            
-            # 모델이 존재하지 않는 404면 대기하지 않고 즉시 다음 모델로 패스
-            if "404" in err_str or "NOT_FOUND" in err_str:
-                print(f"   -> 해당 모델({model_name})은 지원되지 않으므로 건너뜁니다.")
-                break
-                
-            wait_sec = attempt * 5
-            print(f"   -> {wait_sec}초 대기 후 재시도...")
+# 구글 서버 큐가 완전히 비워질 수 있도록 여유 있게 대기 간격 부여 (총 5회)
+retry_intervals = [10, 20, 30, 45, 60]
+
+for attempt, wait_sec in enumerate(retry_intervals, start=1):
+    try:
+        print(f"-> [{TARGET_MODEL}] 데스킹 호출 시도 ({attempt}/{len(retry_intervals)})...")
+        response = client.models.generate_content(
+            model=TARGET_MODEL,
+            contents=prompt,
+        )
+        if response and response.text:
+            result_text = response.text.strip()
+            print(f"🎉 [{TARGET_MODEL}] 데스킹 성공!\n")
+            break
+    except Exception as e:
+        err_str = str(e)
+        print(f"   ❌ ({attempt}차) 구글 서버 과부하: {err_str[:80]}")
+        if attempt < len(retry_intervals):
+            print(f"   -> 큐 정리 대기 중... ({wait_sec}초 후 재호출)")
             time.sleep(wait_sec)
-            
-    if result_text:
-        break
 
 if not result_text:
-    raise RuntimeError("모든 표준 제미나이 모델 호출에 실패했습니다. 에러 로그를 확인하세요.")
+    raise RuntimeError("구글 서버 과부하 상태가 장기화되어 처리를 완료하지 못했습니다.")
 
 print("--- [데스킹 결과 미리보기] ---")
 print(result_text[:350] + "...\n")
