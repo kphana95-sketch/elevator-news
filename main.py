@@ -15,7 +15,13 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = 'gemini-3.8-flash'
+
+# 1순위 모델 및 구글 서버 과부하 시 순차적으로 시도할 대체 모델 풀
+MODELS_TO_TRY = [
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro'
+]
 
 # 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용)
 def fetch_yonhap_news():
@@ -115,30 +121,41 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (503 트래픽 스파이크 대응 6단계 지수 백오프)
+# 3. 제미나이 호출 (모델별 Fallback 및 503/429 대응 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
 result_text = None
-max_retries = 6
+max_retries_per_model = 3  # 모델당 최대 3회 재시도 (5초, 10초, 15초 대기)
 
-for attempt in range(1, max_retries + 1):
-    try:
-        print(f"-> [{MODEL_NAME}] 호출 시도 ({attempt}/{max_retries})...")
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-        )
-        if response and response.text:
-            result_text = response.text.strip()
-            print(f"-> [{MODEL_NAME}] 데스킹 완료!")
-            break
-    except Exception as e:
-        wait_seconds = attempt * 5  # 5초, 10초, 15초, 20초, 25초, 30초 대기
-        err_msg = str(e)
-        print(f"   [{MODEL_NAME}] ({attempt}/{max_retries}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
-        time.sleep(wait_seconds)
+for current_model in MODELS_TO_TRY:
+    print(f"\n[모델 시도] '{current_model}' 호출을 시작합니다.")
+    model_success = False
+
+    for attempt in range(1, max_retries_per_model + 1):
+        try:
+            print(f"-> [{current_model}] 호출 시도 ({attempt}/{max_retries_per_model})...")
+            
+            # AFC 경고 방지 및 안정적인 응답 처리를 위해 chat 세션 사용
+            chat = client.chats.create(model=current_model)
+            response = chat.send_message(prompt)
+            
+            if response and response.text:
+                result_text = response.text.strip()
+                print(f"-> [{current_model}] 데스킹 완료!")
+                model_success = True
+                break
+        except Exception as e:
+            err_msg = str(e)
+            wait_seconds = attempt * 5
+            print(f"   [{current_model}] ({attempt}/{max_retries_per_model}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
+            time.sleep(wait_seconds)
+
+    if model_success:
+        break
+    else:
+        print(f"   ⚠️ [{current_model}] 과부하 지속. 다음 대체 모델로 전환합니다.")
 
 if not result_text:
-    raise RuntimeError("구글 서버 과부하로 처리를 완료하지 못했습니다.")
+    raise RuntimeError("구글 서버 과부하로 모든 대체 모델 처리를 완료하지 못했습니다.")
 
 print("\n--- [데스킹 결과 미리보기] ---")
 print(result_text[:400] + "...\n")
