@@ -16,7 +16,7 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용)
+# 1. 연합뉴스 주요 기사 수집
 def fetch_yonhap_news():
     url = "https://www.yna.co.kr/theme/topnews"
     headers = {
@@ -65,7 +65,7 @@ if not news_list:
 
 news_context = "\n".join([f"- {item}" for item in news_list])
 
-# 2. 제미나이 데스킹 프롬프트 (팩트 뉘앙스 보존 및 사내 가이드 준수)
+# 2. 제미나이 데스킹 프롬프트 (사내 가이드 엄수)
 prompt = f"""
 당신은 경제일간지 뉴스국 엘리베이터 미디어 전용 베테랑 데스크입니다.
 수집된 기사 중에서 빌딩 입주사 임직원 및 직장인들이 출근길에 주목할 만한 가장 가치 있는 기사를 최대 15개(최소 10개 이상) 엄선해 16자 2줄 헤드라인으로 다듬으세요.
@@ -84,8 +84,6 @@ prompt = f"""
 1. 팩트 및 미확정 뉘앙스 보존 (최우선 순위):
    - 원문의 '가능성', '전망', '추진', '검토', '유력', '관측' 등 미확정 사실을 기정사실화(확정형)하여 왜곡하지 마세요.
    - 글자 수가 부족할 경우 탈락시키지 말고 짧은 압축 표현('~할 듯', '관측', '유력', '검토')으로 대체해 뉘앙스를 반드시 살리세요.
-   - (오답 예: 韓 540억달러 투자 발표 ➔ 확정형 오보)
-   - (정답 예: 韓 540억달러 투자할 듯 / 韓 540억달러 투자 관측)
 2. 사내 금액 표기 원칙:
    - '천만원' 단위는 원칙적으로 아라비아 숫자로 표기합니다. (예: 5000만원, 13억5000만원)
    - 16자 초과 시 '13.5억원'처럼 소수점 표기로 축약하세요.
@@ -114,60 +112,53 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 데스킹 호출 (원래 쓰던 모델 + Alias 표준 모델 풀 구성)
-print("2. 제미나이 데스킹 진행 중...")
+# 3. 제미나이 데스킹 (정식 표준 모델명 순차 호출 + 상세 에러 출력)
+print("2. 제미나이 데스킹 진행 중...\n")
 
-# 원래 쓰던 3.8-flash를 1순위로 두고, 최신 표준 별칭 모델들을 백업으로 배치
-MODELS_TO_TRY = [
-    'gemini-3.8-flash',
-    'gemini-flash-latest',
-    'gemini-pro-latest'
+# 공식 지원되는 표준 모델 엔드포인트 목록
+candidate_models = [
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-3.8-flash'
 ]
 
 result_text = None
-max_retries_per_model = 3
 
-for current_model in MODELS_TO_TRY:
-    print(f"\n[모델 시도] '{current_model}' 호출을 시작합니다.")
-    model_success = False
-
-    for attempt in range(1, max_retries_per_model + 1):
+for model_name in candidate_models:
+    print(f"▶ [{model_name}] 모델 시도 시작")
+    for attempt in range(1, 4):
         try:
-            print(f"-> [{current_model}] 호출 시도 ({attempt}/{max_retries_per_model})...")
-            
+            print(f"   ({attempt}/3차) 호출 중...")
             response = client.models.generate_content(
-                model=current_model,
-                contents=prompt
+                model=model_name,
+                contents=prompt,
             )
-            
             if response and response.text:
                 result_text = response.text.strip()
-                print(f"-> [{current_model}] 데스킹 완료!")
-                model_success = True
+                print(f"   🎉 [{model_name}] 데스킹 성공!\n")
                 break
         except Exception as e:
-            err_msg = str(e)
+            err_str = str(e)
+            print(f"   ❌ ({attempt}/3차) 에러 발생: {err_str[:90]}")
             
-            # 없는 모델명(404)은 즉시 다음 모델로 패스
-            if "404" in err_msg or "NOT_FOUND" in err_msg:
-                print(f"   [{current_model}] 지원하지 않는 모델명(404). 다음 대체 모델로 전환합니다.")
+            # 모델이 존재하지 않는 404면 대기하지 않고 즉시 다음 모델로 패스
+            if "404" in err_str or "NOT_FOUND" in err_str:
+                print(f"   -> 해당 모델({model_name})은 지원되지 않으므로 건너뜁니다.")
                 break
                 
-            # 일시적인 503(과부하) 또는 429(요청 제한)는 대기 후 재시도
-            wait_seconds = attempt * 5
-            print(f"   [{current_model}] ({attempt}/{max_retries_per_model}차) 서버 지연 발생: {wait_seconds}초 대기 후 재시도...")
-            time.sleep(wait_seconds)
-
-    if model_success:
+            wait_sec = attempt * 5
+            print(f"   -> {wait_sec}초 대기 후 재시도...")
+            time.sleep(wait_sec)
+            
+    if result_text:
         break
-    else:
-        print(f"   ⚠️ [{current_model}] 실패. 다음 대체 모델로 전환합니다.")
 
 if not result_text:
-    raise RuntimeError("구글 서버 과부하로 모든 대체 모델 처리를 완료하지 못했습니다.")
+    raise RuntimeError("모든 표준 제미나이 모델 호출에 실패했습니다. 에러 로그를 확인하세요.")
 
-print("\n--- [데스킹 결과 미리보기] ---")
-print(result_text[:400] + "...\n")
+print("--- [데스킹 결과 미리보기] ---")
+print(result_text[:350] + "...\n")
 
 # 4. 이메일 자동 발송
 def send_email(subject, body_text):
