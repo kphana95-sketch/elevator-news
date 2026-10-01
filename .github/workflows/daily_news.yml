@@ -2,8 +2,8 @@ name: Daily Elevator News
 
 on:
   schedule:
-    # UTC 20:50 = 한국 시간(KST) 오전 5시 50분
-    - cron: '50 20 * * *'
+    # UTC 20:50 = 한국 시간(KST) 오전 5시 52분
+    - cron: '52 20 * * *'
   workflow_dispatch:
 
 jobs:
