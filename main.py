@@ -16,13 +16,6 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 구글 최신 API에서 실제 서비스 중인 무료 지원 모델 풀
-# 1순위 모델 과부하(503) 시 다음 모델로 자동 전환
-MODELS_TO_TRY = [
-    'gemini-2.5-flash',
-    'gemini-2.5-pro'
-]
-
 # 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용)
 def fetch_yonhap_news():
     url = "https://www.yna.co.kr/theme/topnews"
@@ -121,10 +114,18 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 데스킹 호출
+# 3. 제미나이 데스킹 호출 (원래 쓰던 모델 + Alias 표준 모델 풀 구성)
 print("2. 제미나이 데스킹 진행 중...")
+
+# 원래 쓰던 3.8-flash를 1순위로 두고, 최신 표준 별칭 모델들을 백업으로 배치
+MODELS_TO_TRY = [
+    'gemini-3.8-flash',
+    'gemini-flash-latest',
+    'gemini-pro-latest'
+]
+
 result_text = None
-max_retries_per_model = 4
+max_retries_per_model = 3
 
 for current_model in MODELS_TO_TRY:
     print(f"\n[모델 시도] '{current_model}' 호출을 시작합니다.")
@@ -147,20 +148,20 @@ for current_model in MODELS_TO_TRY:
         except Exception as e:
             err_msg = str(e)
             
-            # 잘못된 모델명(404)은 재시도 없이 즉시 다음 모델로 패스
+            # 없는 모델명(404)은 즉시 다음 모델로 패스
             if "404" in err_msg or "NOT_FOUND" in err_msg:
-                print(f"   [{current_model}] 모델명 404 에러. 즉시 다음 모델로 넘어갑니다.")
+                print(f"   [{current_model}] 지원하지 않는 모델명(404). 다음 대체 모델로 전환합니다.")
                 break
                 
-            # 503(서버 과부하) 또는 429는 대기 후 재시도
-            wait_seconds = attempt * 8  # 8초, 16초, 24초, 32초 대기
-            print(f"   [{current_model}] ({attempt}/{max_retries_per_model}차) 서버 지연: {wait_seconds}초 대기 후 재시도...")
+            # 일시적인 503(과부하) 또는 429(요청 제한)는 대기 후 재시도
+            wait_seconds = attempt * 5
+            print(f"   [{current_model}] ({attempt}/{max_retries_per_model}차) 서버 지연 발생: {wait_seconds}초 대기 후 재시도...")
             time.sleep(wait_seconds)
 
     if model_success:
         break
     else:
-        print(f"   ⚠️ [{current_model}] 처리 불가. 다음 대체 모델로 전환합니다.")
+        print(f"   ⚠️ [{current_model}] 실패. 다음 대체 모델로 전환합니다.")
 
 if not result_text:
     raise RuntimeError("구글 서버 과부하로 모든 대체 모델 처리를 완료하지 못했습니다.")
