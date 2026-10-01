@@ -16,11 +16,11 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 1순위 모델 및 구글 서버 과부하 시 순차적으로 시도할 대체 모델 풀
+# 1순위 모델 및 과부하(503) 시 순차적으로 시도할 구글 정식 지원 모델 풀
 MODELS_TO_TRY = [
-    'gemini-3.8-flash',
-    'gemini-2.5-flash',
-    'gemini-2.5-pro'
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro'
 ]
 
 # 1. 연합뉴스 주요 기사 수집 (다중 셀렉터 적용)
@@ -121,10 +121,10 @@ prompt = f"""
 ...
 """
 
-# 3. 제미나이 호출 (모델별 Fallback 및 503/429 대응 지수 백오프)
+# 3. 제미나이 호출 (모델별 Fallback 및 503 과부하 지수 백오프)
 print("2. 제미나이 데스킹 진행 중...")
 result_text = None
-max_retries_per_model = 3  # 모델당 최대 3회 재시도 (5초, 10초, 15초 대기)
+max_retries_per_model = 3
 
 for current_model in MODELS_TO_TRY:
     print(f"\n[모델 시도] '{current_model}' 호출을 시작합니다.")
@@ -145,6 +145,13 @@ for current_model in MODELS_TO_TRY:
                 break
         except Exception as e:
             err_msg = str(e)
+            
+            # 지원하지 않거나 오타 난 모델(404)은 무의미한 재시도 없이 즉시 다음 모델로 패스
+            if "404" in err_msg or "NOT_FOUND" in err_msg:
+                print(f"   [{current_model}] 모델명이 유효하지 않음(404). 즉시 대체 모델로 전환합니다.")
+                break
+                
+            # 일시적 503(서버 과부하) 또는 429(속도 제한)인 경우 대기 후 재시도
             wait_seconds = attempt * 5
             print(f"   [{current_model}] ({attempt}/{max_retries_per_model}차) 일시 지연: {err_msg[:60]}... {wait_seconds}초 대기 후 재시도")
             time.sleep(wait_seconds)
@@ -152,7 +159,7 @@ for current_model in MODELS_TO_TRY:
     if model_success:
         break
     else:
-        print(f"   ⚠️ [{current_model}] 과부하 지속. 다음 대체 모델로 전환합니다.")
+        print(f"   ⚠️ [{current_model}] 호출 실패. 다음 대체 모델로 전환합니다.")
 
 if not result_text:
     raise RuntimeError("구글 서버 과부하로 모든 대체 모델 처리를 완료하지 못했습니다.")
